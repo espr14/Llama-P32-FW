@@ -11,27 +11,14 @@
 #include "../../../module/probe.h"
 #include "../../queue.h"
 
-#if HAS_DISPLAY
-    #include "../../../lcd/ultralcd.h"
-#endif
-
-#if ENABLED(AUTO_BED_LEVELING_LINEAR)
-    #include "../../../libs/least_squares_fit.h"
-#endif
-
 #if ABL_PLANAR
     #include "../../../libs/vector_3.h"
 #endif
 
-#define DEBUG_OUT ENABLED(DEBUG_LEVELING_FEATURE)
 #include "../../../core/debug_out.h"
 
 #if ENABLED(EXTENSIBLE_UI)
     #include "../../../lcd/extensible_ui/ui_api.h"
-#endif
-
-#if HOTENDS > 1
-    #include "../../../module/tool_change.h"
 #endif
 
 #if ABL_GRID
