@@ -21,10 +21,9 @@
     #define PR_INNER_VAR meshCount.x
     #define PR_INNER_END abl_grid_points.x
 #endif
+// from G29
 
-#define G29_RETURN(b) return;
-
-// end from G29
+std::array<xy_uint8_t, 9> skew_points = { { 14, 20 }, { 74, 20 }, { 146, 20 }, { 146, 89 }, { 74, 89 }, { 14, 99 }, { 14, 164 }, { 74, 164 }, { 146, 164 } };
 
 xy_pos_t calculate_center(std::array<std::array<float, 32>, 32> z_grid) {
     return {};
@@ -37,7 +36,7 @@ static float run_z_probe(float min_z = -1) {
     return current_position.z;
 }
 
-float probe_at_skew_point(const xy_pos_t &pos, const ProbePtRaise raise_after = PROBE_PT_NONE) {
+float probe_at_skew_point(const xy_pos_t &pos) {
     xyz_pos_t npos = { pos.x, pos.y };
     if (!position_is_reachable_by_probe(npos))
         return NAN;       // The given position is in terms of the probe
@@ -53,9 +52,7 @@ float probe_at_skew_point(const xy_pos_t &pos, const ProbePtRaise raise_after = 
     float measured_z = run_z_probe() + probe_offset.z;
 
     /// TODO: raise until untriggered
-    const bool big_raise = raise_after == PROBE_PT_BIG_RAISE;
-    if (big_raise || raise_after == PROBE_PT_RAISE)
-        do_blocking_move_to_z(current_position.z + (big_raise ? 25 : Z_CLEARANCE_BETWEEN_PROBES), MMM_TO_MMS(Z_PROBE_SPEED_FAST));
+    do_blocking_move_to_z(current_position.z + (Z_CLEARANCE_BETWEEN_PROBES), MMM_TO_MMS(Z_PROBE_SPEED_FAST));
 
     feedrate_mm_s = old_feedrate_mm_s;
     if (isnan(measured_z))
@@ -66,36 +63,14 @@ float probe_at_skew_point(const xy_pos_t &pos, const ProbePtRaise raise_after = 
 void PrusaGcodeSuite::M45() {
     // TODO G28 if needed
     if (axis_unhomed_error())
-        G29_RETURN(false);
-
-    // Define local vars 'static' for manual probing, 'auto' otherwise
-
-    xy_pos_t probePos;
-    xy_int_t probe_position_lf, probe_position_rb;
-    xy_float_t gridSpacing = { 0, 0 };
-    constexpr xy_uint8_t abl_grid_points = { GRID_MAX_POINTS_X, GRID_MAX_POINTS_Y };
-    xy_probe_feedrate_mm_s = MMM_TO_MMS(XY_PROBE_SPEED);
-
-    const float x_min = probe_min_x(), x_max = probe_max_x(),
-                y_min = probe_min_y(), y_max = probe_max_y();
-
-    probe_position_lf.set(
-        _MAX(X_CENTER - (X_BED_SIZE) / 2, x_min),
-        _MAX(Y_CENTER - (Y_BED_SIZE) / 2, y_min));
-    probe_position_rb.set(
-        _MIN(probe_position_lf.x + X_BED_SIZE, x_max),
-        _MIN(probe_position_lf.y + Y_BED_SIZE, y_max));
-
-    // probe at the points of a lattice grid
-    gridSpacing.set((probe_position_rb.x - probe_position_lf.x) / (abl_grid_points.x - 1),
-        (probe_position_rb.y - probe_position_lf.y) / (abl_grid_points.y - 1));
+        return;
 
     planner.synchronize();
-
     set_bed_leveling_enabled(false);
     remember_feedrate_scaling_off();
 
-    const ProbePtRaise raise_after = PROBE_PT_RAISE;
+    xy_pos_t probePos;
+    xy_probe_feedrate_mm_s = MMM_TO_MMS(XY_PROBE_SPEED);
     float measured_z = 0;
     std::array<std::array<float, 32>, 32> z_grid;
     std::array<std::array<xy_pos_t, 3>, 3> centers;
@@ -103,6 +78,7 @@ void PrusaGcodeSuite::M45() {
     /// cycle over 9 points
     for (int8_t py = 0; py < 3; ++py) {
         for (int8_t px = 0; px < 3; ++px) {
+            probePos = skew_points[3 * py + px];
             /// TODO: find safe Z
 
             /// scan 32x32 array
@@ -111,7 +87,7 @@ void PrusaGcodeSuite::M45() {
                     probePos.x += x - 32 / 2 + .5f;
                     probePos.y += y - 32 / 2 + .5f;
                     /// FIXME: don't go too low
-                    measured_z = probe_at_skew_point(probePos, raise_after);
+                    measured_z = probe_at_skew_point(probePos);
                     z_grid[x][y] = isnan(measured_z) ? -100.f : measured_z;
                     idle(false);
                 }
