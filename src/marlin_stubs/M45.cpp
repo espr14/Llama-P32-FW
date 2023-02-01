@@ -91,17 +91,59 @@ float probe_at_skew_point(const xy_pos_t &pos) {
     return measured_z;
 }
 
+// Do "8" moves and stop if probe triggered or too low.
+// \returns true if probe triggered
 bool find_safe_z() {
-    // TODO turn endstops on
-    for (float z = 5; z > 0;) {
-        // CW circle
-        plan_arc(current_position, ab_float_t(0, 16), true);
+    bool hit = false;
+
+// Disable stealthChop if used. Enable diag1 pin on driver.
+#if ENABLED(SENSORLESS_PROBING)
+    sensorless_t stealth_states { false };
+    #if ENABLED(DELTA)
+    stealth_states.x = tmc_enable_stallguard(stepperX);
+    stealth_states.y = tmc_enable_stallguard(stepperY);
+    #endif
+    stealth_states.z = tmc_enable_stallguard(stepperZ);
+    endstops.enable(true);
+#endif
+
+    for (float step = 0; z > 0; ++step) {
         z -= .3f;
-        // CCW circle
-        plan_arc(current_position, ab_float_t(0, -16), false);
-        z -= .3f;
+        if (step % 2) {
+            // CCW circle
+            plan_arc(current_position, ab_float_t(0, -16), false);
+        } else {
+            // CW circle
+            plan_arc(current_position, ab_float_t(0, 16), true);
+        }
+
+        // Check to see if the probe was triggered
+        hit = TEST(endstops.trigger_state(),
+#if ENABLED(Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN)
+            Z_MIN
+#else
+            Z_MIN_PROBE
+#endif
+        );
     }
-    // TODO turn endstops off
+
+// Re-enable stealthChop if used. Disable diag1 pin on driver.
+#if ENABLED(SENSORLESS_PROBING)
+    endstops.not_homing();
+    #if ENABLED(DELTA)
+    tmc_disable_stallguard(stepperX, stealth_states.x);
+    tmc_disable_stallguard(stepperY, stealth_states.y);
+    #endif
+    tmc_disable_stallguard(stepperZ, stealth_states.z);
+#endif
+
+    // Clear endstop flags
+    endstops.hit_on_purpose();
+    // Get Z where the steppers were interrupted
+    set_current_from_steppers_for_axis(Z_AXIS);
+    // Tell the planner where we actually are
+    sync_plan_position();
+    return hit;
 }
 
 void PrusaGcodeSuite::M45() {
