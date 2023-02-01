@@ -23,7 +23,38 @@
 #endif
 // from G29
 
-std::array<xy_uint8_t, 9> skew_points = { { 14, 20 }, { 74, 20 }, { 146, 20 }, { 146, 89 }, { 74, 89 }, { 14, 99 }, { 14, 164 }, { 74, 164 }, { 146, 164 } };
+// std::array<xy_uint8_t, 9> skew_points = { { 14, 20 }, { 74, 20 }, { 146, 20 }, { 146, 89 }, { 74, 89 }, { 14, 99 }, { 14, 164 }, { 74, 164 }, { 146, 164 } };
+
+xy_pos_t get_skew_point(int8_t ix, int8_t iy) {
+    if (ix == 0 && iy == 1)
+        return (xy_pos_t) { 14, 99 };
+
+    xy_pos_t pos;
+    switch (ix) {
+    case 0:
+        pos.x = 14;
+        break;
+    case 1:
+        pos.x = 74;
+        break;
+    case 2:
+        pos.x = 146;
+        break;
+    }
+
+    switch (iy) {
+    case 0:
+        pos.y = 20;
+        break;
+    case 1:
+        pos.y = 89;
+        break;
+    case 2:
+        pos.y = 164;
+        break;
+    }
+    return pos;
+}
 
 xy_pos_t calculate_center(std::array<std::array<float, 32>, 32> z_grid) {
     return {};
@@ -52,12 +83,25 @@ float probe_at_skew_point(const xy_pos_t &pos) {
     float measured_z = run_z_probe() + probe_offset.z;
 
     /// TODO: raise until untriggered
-    do_blocking_move_to_z(current_position.z + (Z_CLEARANCE_BETWEEN_PROBES), MMM_TO_MMS(Z_PROBE_SPEED_FAST));
+    do_blocking_move_to_z(npos.z + (Z_CLEARANCE_BETWEEN_PROBES), MMM_TO_MMS(Z_PROBE_SPEED_FAST));
 
     feedrate_mm_s = old_feedrate_mm_s;
     if (isnan(measured_z))
         return 0;
     return measured_z;
+}
+
+bool find_safe_z() {
+    // TODO turn endstops on
+    for (float z = 5; z > 0;) {
+        // CW circle
+        plan_arc(current_position, ab_float_t(0, 16), true);
+        z -= .3f;
+        // CCW circle
+        plan_arc(current_position, ab_float_t(0, -16), false);
+        z -= .3f;
+    }
+    // TODO turn endstops off
 }
 
 void PrusaGcodeSuite::M45() {
@@ -78,8 +122,12 @@ void PrusaGcodeSuite::M45() {
     /// cycle over 9 points
     for (int8_t py = 0; py < 3; ++py) {
         for (int8_t px = 0; px < 3; ++px) {
-            probePos = skew_points[3 * py + px];
-            /// TODO: find safe Z
+            probePos = get_skew_point(px, py);
+            do_blocking_move_to(probePos, xy_probe_feedrate_mm_s);
+            if (!find_safe_z()) {
+                centers[px][py] = xy_pos_t(NAN, NAN);
+                break;
+            }
 
             /// scan 32x32 array
             for (int8_t y = 0; y < 32; ++y) {
