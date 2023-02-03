@@ -9,6 +9,8 @@
 #include "../../lib/Marlin/Marlin/src/module/stepper.h"
 #include "../../lib/Marlin/Marlin/src/module/probe.h"
 #include "../../lib/Marlin/Marlin/src/gcode/queue.h"
+#include "../../lib/Marlin/Marlin/src/gcode/motion/G2_G3.h"
+#include "../../lib/Marlin/Marlin/src/module/endstops.h"
 
 #if ENABLED(PROBE_Y_FIRST)
     #define PR_OUTER_VAR meshCount.x
@@ -27,7 +29,7 @@
 
 xy_pos_t get_skew_point(int8_t ix, int8_t iy) {
     if (ix == 0 && iy == 1)
-        return (xy_pos_t) { 14, 99 };
+        return xy_pos_t { 14, 99 };
 
     xy_pos_t pos;
     switch (ix) {
@@ -107,24 +109,21 @@ bool find_safe_z() {
     endstops.enable(true);
 #endif
 
-    for (float step = 0; z > 0; ++step) {
+    float z = current_position.z;
+    for (int step = 0; z > 0; ++step) {
         z -= .3f;
         if (step % 2) {
             // CCW circle
-            plan_arc(current_position, ab_float_t(0, -16), false);
+            plan_arc(current_position, ab_float_t { 0.f, -16.f }, false);
         } else {
             // CW circle
-            plan_arc(current_position, ab_float_t(0, 16), true);
+            plan_arc(current_position, ab_float_t { 0.f, 16.f }, true);
         }
 
         // Check to see if the probe was triggered
-        hit = TEST(endstops.trigger_state(),
-#if ENABLED(Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN)
-            Z_MIN
-#else
-            Z_MIN_PROBE
-#endif
-        );
+        hit = TEST(endstops.trigger_state(), Z_MIN);
+        if (hit)
+            break;
     }
 
 // Re-enable stealthChop if used. Disable diag1 pin on driver.
@@ -167,7 +166,7 @@ void PrusaGcodeSuite::M45() {
             probePos = get_skew_point(px, py);
             do_blocking_move_to(probePos, xy_probe_feedrate_mm_s);
             if (!find_safe_z()) {
-                centers[px][py] = xy_pos_t(NAN, NAN);
+                centers[px][py] = xy_pos_t { NAN, NAN };
                 break;
             }
 
@@ -185,6 +184,19 @@ void PrusaGcodeSuite::M45() {
 
             /// print point grid
             // print_2d_array(z_grid.size(), z_grid[0].size(), 3, [](const uint8_t ix, const uint8_t iy) { return z_grid[ix][iy]; });
+
+            SERIAL_EOL();
+            for (int8_t y = 0; y < 32; ++y) {
+                for (int8_t x = 0; x < 32; ++x) {
+                    SERIAL_ECHO(z_grid[x][y]);
+                }
+                SERIAL_EOL();
+            }
+            SERIAL_EOL();
+
+            //                 SERIAL_ECHO(int(x));
+            //   SERIAL_EOL();
+            //   SERIAL_ECHOLNPGM("measured_z = ["); // open 2D array
 
             centers[px][py] = calculate_center(z_grid);
         }
@@ -208,3 +220,16 @@ void PrusaGcodeSuite::M45() {
     planner.synchronize();
     report_current_position();
 }
+
+/// Skew computation:
+
+/// I  ... ideal point position matrix (XY)
+/// M  ... measured points (matrix) (XY)
+/// SH1... 1st shift matrix (2 variables)
+/// R  ... rotation matrix (1 variable)
+/// SH2... 2nd shift matrix (2 variables)
+/// SK ... skew matrix (1 variable)
+
+/// I * SH1 * R * SH2 * SK = M
+
+/// 3 (XY) points needed to fully define all 6 variables
