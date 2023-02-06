@@ -223,13 +223,19 @@ void PrusaGcodeSuite::M45() {
 
 /// Skew computation:
 
-/// I  ... ideal point position matrix (XY)
-/// M  ... measured points (matrix) (XY)
+/// M  ... measured points (points in columns) (XY)
+/// I  ... ideal point position matrix (points in columns) (XY)
 /// SH1... 1st shift matrix (2 variables)
 /// R  ... rotation matrix (1 variable)
 /// SH2... 2nd shift matrix (2 variables)
 /// SK ... skew matrix (1 variable)
 
-/// I * SH1 * R * SH2 * SK = M
-
 /// 3 (XY) points needed to fully define all 6 variables
+
+/// SK * (SH2 + R * (SH1 + I)) = M
+
+/// SK =  1 sk
+///       0  1
+
+///    sh2x + co * (sh1x + ix) - si * (sh1y + iy) + sk * ym  = xm
+///    sh2y + si * (sh1x + ix) + co * (sh1y + iy)            = ym
