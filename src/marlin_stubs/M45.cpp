@@ -230,12 +230,26 @@ void PrusaGcodeSuite::M45() {
 /// SH2... 2nd shift matrix (2 variables)
 /// SK ... skew matrix (1 variable)
 
-/// 3 (XY) points needed to fully define all 6 variables
-
-/// SK * (SH2 + R * (SH1 + I)) = M
-
 /// SK =  1 sk
 ///       0  1
 
-///    sh2x + co * (sh1x + ix) - si * (sh1y + iy) + sk * ym  = xm
-///    sh2y + si * (sh1x + ix) + co * (sh1y + iy)            = ym
+/// SK * (SH2 + R * (SH1 + I)) = M
+
+/// sh2x + co * (sh1x + ix) - si * (sh1y + iy) + sk * my  = mx
+/// sh2y + si * (sh1x + ix) + co * (sh1y + iy)            = my
+/// co = cos(phi), si = sin(phi)
+
+/// 3 (XY) points needed to fully define all 6 variables.
+/// Too complicated. But distance (of 2 points) is not dependent on shift or rotation.
+/// Still, we need rotation to apply proper skew.
+
+/// B  ... base vectors of points (shifted to [0,0]) (XY)
+
+/// ||SK * R * B|| = ||M||
+
+/// py = si * bx + co * by   // y part
+/// ||co * bx - si * by + sk * py, py|| = ||mx, my||
+
+/// Now, 2 vectors (3 or 4 points) provide over-defined equation which eliminates some error.
+/// Ideally, vectors should not be in similar direction for precise results (right angle is the best).
+/// Error plane should have at most 2 local minimas which is ideal for iterative numerical method.
