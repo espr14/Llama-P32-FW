@@ -25,9 +25,9 @@
 #endif
 // from G29
 
-// std::array<xy_uint8_t, 9> skew_points = { { 14, 20 }, { 74, 20 }, { 146, 20 }, { 146, 89 }, { 74, 89 }, { 14, 99 }, { 14, 164 }, { 74, 164 }, { 146, 164 } };
-
 xy_pos_t get_skew_point(int8_t ix, int8_t iy) {
+    // std::array<xy_uint8_t, 9> skew_points = { { 14, 20 }, { 74, 20 }, { 146, 20 }, { 146, 89 }, { 74, 89 }, { 14, 99 }, { 14, 164 }, { 74, 164 }, { 146, 164 } };
+
     if (ix == 0 && iy == 1)
         return xy_pos_t { 14, 99 };
 
@@ -58,8 +58,39 @@ xy_pos_t get_skew_point(int8_t ix, int8_t iy) {
     return pos;
 }
 
+void print_area(std::array<std::array<float, 32>, 32> z_grid) {
+    SERIAL_EOL();
+    for (int8_t y = 0; y < 32; ++y) {
+        for (int8_t x = 0; x < 32; ++x) {
+            SERIAL_ECHO(z_grid[x][y]);
+            SERIAL_CHAR(' ');
+        }
+        SERIAL_EOL();
+    }
+    SERIAL_EOL();
+}
+
 xy_pos_t calculate_center(std::array<std::array<float, 32>, 32> z_grid) {
     return {};
+}
+
+void print_centers(std::array<std::array<xy_pos_t, 3>, 3> centers) {
+    SERIAL_EOL();
+    for (int8_t y = 0; y < 3; ++y) {
+        for (int8_t x = 0; x < 3; ++x) {
+            SERIAL_CHAR('[');
+            SERIAL_ECHO(centers[x][y].x);
+            SERIAL_CHAR(',');
+            SERIAL_ECHO(centers[x][y].y);
+            SERIAL_CHAR('[');
+            SERIAL_CHAR(' ');
+        }
+        SERIAL_EOL();
+    }
+    SERIAL_EOL();
+}
+
+void calculate_skews(std::array<std::array<xy_pos_t, 3>, 3> centers) {
 }
 
 static float run_z_probe(float min_z = -1) {
@@ -185,14 +216,7 @@ void PrusaGcodeSuite::M45() {
             /// print point grid
             // print_2d_array(z_grid.size(), z_grid[0].size(), 3, [](const uint8_t ix, const uint8_t iy) { return z_grid[ix][iy]; });
 
-            SERIAL_EOL();
-            for (int8_t y = 0; y < 32; ++y) {
-                for (int8_t x = 0; x < 32; ++x) {
-                    SERIAL_ECHO(z_grid[x][y]);
-                }
-                SERIAL_EOL();
-            }
-            SERIAL_EOL();
+            print_area(z_grid);
 
             //                 SERIAL_ECHO(int(x));
             //   SERIAL_EOL();
@@ -202,7 +226,7 @@ void PrusaGcodeSuite::M45() {
         }
     }
 
-    /// TODO: print centers
+    print_centers(centers);
 
     current_position.z -= bilinear_z_offset(current_position);
     planner.leveling_active = true;
@@ -213,7 +237,7 @@ void PrusaGcodeSuite::M45() {
     /// TODO: convert to non-blocking move
     move_z_after_probing();
 
-    /// calculate XY skews
+    calculate_skews(centers);
     /// pick median
     /// set XY skew
 
@@ -247,9 +271,23 @@ void PrusaGcodeSuite::M45() {
 
 /// ||SK * R * B|| = ||M||
 
+/// px = co * bx - si * by   // x part
 /// py = si * bx + co * by   // y part
-/// ||co * bx - si * by + sk * py, py|| = ||mx, my||
+/// ||px + sk * py, py|| = ||mx, my||
+
+/// Ax + b = 0
+///  ||px1 + sk * py1, py1|| - ||mx1, my1|| = 0
+///  ||px2 + sk * py2, py2|| - ||mx2, my2|| = 0
 
 /// Now, 2 vectors (3 or 4 points) provide over-defined equation which eliminates some error.
 /// Ideally, vectors should not be in similar direction for precise results (right angle is the best).
 /// Error plane should have at most 2 local minimas which is ideal for iterative numerical method.
+/// We can set rotation limits to +/- 20° because it will be, typically, only few degrees.
+/// Use golden ratio 0.618.
+/// Guess rotation and compute skew coefficient. Minimize error.
+
+/// err = (px + sk * py)^2 + py^2 - (mx^2 + my^2)
+/// err = px^2 + sk^2 * py^2 + 2 * px * sk * py + py^2 - mx^2 - my^2
+
+/// err = sk^2 * (py1^2) + sk * (2 * px1 * py1) + (py1^2 + px1^2 - mx1^2 - my1^2)
+/// err = sk^2 * (py2^2) + sk * (2 * px2 * py2) + (py2^2 + px2^2 - mx2^2 - my2^2)
