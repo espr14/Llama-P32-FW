@@ -15,7 +15,7 @@ LOG_COMPONENT_DEF(USBDevice, LOG_SEVERITY_INFO);
 #define USBD_PID                    0x000C /// Prusa MINI Product ID
 #define USBD_LANGID_STRING          1033
 #define USBD_MANUFACTURER_STRING    "Prusa Research (prusa3d.com)"
-#define USBD_PRODUCT_STRING_FS      ("Original Llama MINI")
+#define USBD_PRODUCT_STRING_FS      ("Snake MINI")
 #define USBD_SERIALNUMBER_STRING_FS "00000000001A"
 
 #define USB_SIZ_BOS_DESC 0x0C
@@ -139,7 +139,6 @@ uint8_t const *tud_descriptor_device_cb(void) {
 enum {
     INTERFACE_CDC = 0,
     INTERFACE_CDC_DATA,
-    INTERFACE_MSC,
     INTERFACE_COUNT
 };
 
@@ -148,9 +147,6 @@ enum {
 #define EPNUM_CDC_NOTIF 0x81
 #define EPNUM_CDC_OUT   0x02
 #define EPNUM_CDC_IN    0x82
-
-#define EPNUM_MSC_OUT 0x03
-#define EPNUM_MSC_IN  0x83
 
 uint8_t const desc_fs_configuration[] = {
     // Config number, interface count, string index, total length, attribute, power in mA
