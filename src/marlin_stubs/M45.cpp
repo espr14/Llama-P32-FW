@@ -1,6 +1,5 @@
 #include "PrusaGcodeSuite.hpp"
 
-// from G29
 #include "../../lib/Marlin/Marlin/src/inc/MarlinConfig.h"
 #include "../../lib/Marlin/Marlin/src/gcode/gcode.h"
 #include "../../lib/Marlin/Marlin/src/feature/bedlevel/bedlevel.h"
@@ -12,47 +11,37 @@
 #include "../../lib/Marlin/Marlin/src/gcode/motion/G2_G3.h"
 #include "../../lib/Marlin/Marlin/src/module/endstops.h"
 
-#if ENABLED(PROBE_Y_FIRST)
-    #define PR_OUTER_VAR meshCount.x
-    #define PR_OUTER_END abl_grid_points.x
-    #define PR_INNER_VAR meshCount.y
-    #define PR_INNER_END abl_grid_points.y
-#else
-    #define PR_OUTER_VAR meshCount.y
-    #define PR_OUTER_END abl_grid_points.y
-    #define PR_INNER_VAR meshCount.x
-    #define PR_INNER_END abl_grid_points.x
-#endif
-// from G29
+const float radius_8 = 3.f;
 
 xy_pos_t get_skew_point(int8_t ix, int8_t iy) {
     // std::array<xy_uint8_t, 9> skew_points = { { 14, 20 }, { 74, 20 }, { 146, 20 }, { 146, 89 }, { 74, 89 }, { 14, 99 }, { 14, 164 }, { 74, 164 }, { 146, 164 } };
+    const xyz_pos_t probe = NOZZLE_TO_PROBE_OFFSET;
 
     if (ix == 0 && iy == 1)
-        return xy_pos_t { 14, 99 };
+        return xy_pos_t { 14 - probe.x, 99 - probe.y };
 
     xy_pos_t pos;
     switch (ix) {
     case 0:
-        pos.x = 14;
+        pos.x = 14 - probe.x;
         break;
     case 1:
-        pos.x = 74;
+        pos.x = 74 - probe.x;
         break;
     case 2:
-        pos.x = 146;
+        pos.x = 146 - probe.x;
         break;
     }
 
     switch (iy) {
     case 0:
-        pos.y = 20;
+        pos.y = 20 - probe.y;
         break;
     case 1:
-        pos.y = 89;
+        pos.y = 89 - probe.y;
         break;
     case 2:
-        pos.y = 164;
+        pos.y = 164 - probe.y;
         break;
     }
     return pos;
@@ -102,18 +91,17 @@ static float run_z_probe(float min_z = -1) {
 
 float probe_at_skew_point(const xy_pos_t &pos) {
     xyz_pos_t npos = { pos.x, pos.y };
-    if (!position_is_reachable_by_probe(npos))
-        return NAN;       // The given position is in terms of the probe
-    npos -= probe_offset; // Get the nozzle position
-
     npos.z = current_position.z;
+    if (!position_is_reachable_by_probe(npos))
+        return NAN; // The given position is in terms of the probe
+
     const float old_feedrate_mm_s = feedrate_mm_s;
     feedrate_mm_s = XY_PROBE_FEEDRATE_MM_S;
 
     // Move the probe to the starting XYZ
     do_blocking_move_to(npos);
 
-    float measured_z = run_z_probe() + probe_offset.z;
+    float measured_z = run_z_probe();
 
     /// TODO: raise until untriggered
     do_blocking_move_to_z(npos.z + (Z_CLEARANCE_BETWEEN_PROBES), MMM_TO_MMS(Z_PROBE_SPEED_FAST));
@@ -142,19 +130,21 @@ bool find_safe_z() {
 
     float z = current_position.z;
     for (int step = 0; z > 0; ++step) {
-        z -= .3f;
         if (step % 2) {
             // CCW circle
-            plan_arc(current_position, ab_float_t { 0.f, -16.f }, false);
+            plan_arc(current_position, ab_float_t { 0.f, -radius_8 }, false);
         } else {
             // CW circle
-            plan_arc(current_position, ab_float_t { 0.f, 16.f }, true);
+            plan_arc(current_position, ab_float_t { 0.f, radius_8 }, true);
         }
 
         // Check to see if the probe was triggered
         hit = TEST(endstops.trigger_state(), Z_MIN);
         if (hit)
             break;
+
+        z -= .3f;
+        do_blocking_move_to_z(z, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
     }
 
 // Re-enable stealthChop if used. Disable diag1 pin on driver.
@@ -195,38 +185,49 @@ void PrusaGcodeSuite::M45() {
     for (int8_t py = 0; py < 3; ++py) {
         for (int8_t px = 0; px < 3; ++px) {
             probePos = get_skew_point(px, py);
+            SERIAL_ECHO(current_position.z);
+            SERIAL_EOL();
+            do_blocking_move_to_z(2, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
+            SERIAL_ECHO(current_position.z);
+            SERIAL_EOL();
             do_blocking_move_to(probePos, xy_probe_feedrate_mm_s);
-            if (!find_safe_z()) {
+            SERIAL_ECHO(current_position.z);
+            SERIAL_EOL();
+            bool is_z = find_safe_z();
+            SERIAL_ECHO(current_position.z);
+            SERIAL_EOL();
+
+            if (!is_z) {
                 centers[px][py] = xy_pos_t { NAN, NAN };
-                break;
+                continue;
             }
 
-            /// scan 32x32 array
-            for (int8_t y = 0; y < 32; ++y) {
-                for (int8_t x = 0; x < 32; ++x) {
-                    probePos.x += x - 32 / 2 + .5f;
-                    probePos.y += y - 32 / 2 + .5f;
-                    /// FIXME: don't go too low
-                    measured_z = probe_at_skew_point(probePos);
-                    z_grid[x][y] = isnan(measured_z) ? -100.f : measured_z;
-                    idle(false);
-                }
-            }
+            // /// scan 32x32 array
+            // for (int8_t y = 0; y < 32; ++y) {
+            //     for (int8_t x = 0; x < 32; ++x) {
+            //         probePos.x += x - 32 / 2 + .5f;
+            //         probePos.y += y - 32 / 2 + .5f;
+            //         /// FIXME: don't go too low
+            //         measured_z = probe_at_skew_point(probePos);
+            //         z_grid[x][y] = isnan(measured_z) ? -100.f : measured_z;
+            //         idle(false);
+            //     }
+            // }
 
-            /// print point grid
-            // print_2d_array(z_grid.size(), z_grid[0].size(), 3, [](const uint8_t ix, const uint8_t iy) { return z_grid[ix][iy]; });
+            // /// print point grid
+            // // print_2d_array(z_grid.size(), z_grid[0].size(), 3, [](const uint8_t ix, const uint8_t iy) { return z_grid[ix][iy]; });
 
-            print_area(z_grid);
+            // print_area(z_grid);
 
-            //                 SERIAL_ECHO(int(x));
-            //   SERIAL_EOL();
-            //   SERIAL_ECHOLNPGM("measured_z = ["); // open 2D array
+            // //                 SERIAL_ECHO(int(x));
+            // //   SERIAL_EOL();
+            // //   SERIAL_ECHOLNPGM("measured_z = ["); // open 2D array
 
-            centers[px][py] = calculate_center(z_grid);
+            // centers[px][py] = calculate_center(z_grid);
         }
     }
 
-    print_centers(centers);
+    // print_centers(centers);
 
     current_position.z -= bilinear_z_offset(current_position);
     planner.leveling_active = true;
@@ -237,7 +238,7 @@ void PrusaGcodeSuite::M45() {
     /// TODO: convert to non-blocking move
     move_z_after_probing();
 
-    calculate_skews(centers);
+    // calculate_skews(centers);
     /// pick median
     /// set XY skew
 
