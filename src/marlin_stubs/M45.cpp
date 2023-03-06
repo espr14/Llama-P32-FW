@@ -47,6 +47,8 @@ xy_pos_t get_skew_point(int8_t ix, int8_t iy) {
     return pos;
 }
 
+xy_pos_t get_skew_point(xy_byte_t index) { return get_skew_point(index.x, index.y); }
+
 void print_area(std::array<std::array<float, 32>, 32> z_grid) {
     SERIAL_EOL();
     for (int8_t y = 0; y < 32; ++y) {
@@ -60,6 +62,7 @@ void print_area(std::array<std::array<float, 32>, 32> z_grid) {
 }
 
 xy_pos_t calculate_center(std::array<std::array<float, 32>, 32> z_grid) {
+    /// TODO:
     return {};
 }
 
@@ -71,7 +74,7 @@ void print_centers(std::array<std::array<xy_pos_t, 3>, 3> centers) {
             SERIAL_ECHO(centers[x][y].x);
             SERIAL_CHAR(',');
             SERIAL_ECHO(centers[x][y].y);
-            SERIAL_CHAR('[');
+            SERIAL_CHAR(']');
             SERIAL_CHAR(' ');
         }
         SERIAL_EOL();
@@ -79,7 +82,211 @@ void print_centers(std::array<std::array<xy_pos_t, 3>, 3> centers) {
     SERIAL_EOL();
 }
 
+void apply_transform(xy_pos_t &point, float co, float si, float skew) {
+    xy_pos_t tmp;
+    tmp.y = si * point.x + co * point.y;
+    tmp.x = co * point.x - si * point.y + skew * tmp.y;
+    point = tmp;
+}
+
+float get_length(xy_pos_t p1, xy_pos_t p2, float co, float si, float skew) {
+    apply_transform(p1, co, si, skew);
+    apply_transform(p2, co, si, skew);
+    return sqrt(sq(p1.x - p2.x) + sq(p1.y - p2.y));
+}
+
+float get_error(std::array<xy_byte_t, 4> indexes, std::array<xy_pos_t, 4> measured, float co, float si, float skew) {
+    std::array<float, 2> lm, lc;
+    for (int i = 0; i < 2; ++i) {
+        lm[i] = get_length(measured[2 * i], measured[2 * i + 1], co, si, skew);
+        lc[i] = get_length(get_skew_point(indexes[2 * i]), get_skew_point(indexes[2 * i + 1]), co, si, skew);
+    }
+
+    return sq(lm[0] - lc[0]) + sq(lm[1] - lc[1]);
+}
+
+float find_skew(std::array<xy_byte_t, 4> indexes, std::array<xy_pos_t, 4> points, float rotation, float &skew) {
+    const float co = cos(rotation);
+    const float si = sin(rotation);
+
+    // try different skews and find best result
+    float best_err = std::numeric_limits<float>::max();
+    float best_skew = 0.f;
+    float step = 0.01f;
+    const float eps = 0.0001f;
+    float err1 = 0.f;
+    float err3 = 0.f;
+
+    // find three values:
+    // if middle is the best then we are at the minimum (increase precision / decrease step size)
+    // if a side is the best then go that direction until the direction changes
+
+    // optimization: the middle stays the same if step is changed (no need for recompute)
+    float err2 = get_error(indexes, points, co, si, skew);
+    while (step > eps) {
+        err1 = get_error(indexes, points, co, si, skew - step);
+        err3 = get_error(indexes, points, co, si, skew + step);
+
+        int dir = (err3 < err1) ? 1 : -1;
+
+        while (1) {
+            if (err2 < err1 && err2 < err3) {
+                if (err2 < best_err) {
+                    best_err = err2;
+                    best_skew = skew;
+                }
+                break;
+            }
+
+            /// TODO: convert err to array and use indexes
+            if (err1 < err3) {
+                if (err1 < best_err) {
+                    best_err = err1;
+                    best_skew = skew - step;
+                }
+
+            } else {
+                if (err3 < best_err) {
+                    best_err = err3;
+                    best_skew = skew + step;
+                }
+            }
+
+            int dir_new = (err3 < err1) ? 1 : -1;
+            if (dir_new != dir)
+                break;
+
+            // continue in the same direction
+            skew += dir * step;
+            if (dir == 1) {
+                err1 = err2;
+                err2 = err3;
+                err3 = get_error(indexes, points, co, si, skew + step);
+            } else {
+                err3 = err2;
+                err2 = err1;
+                err1 = get_error(indexes, points, co, si, skew - step);
+            }
+        }
+        // we are close to minimum => decrease step
+        step *= 0.5f;
+    }
+
+    skew = best_skew;
+    return best_err;
+}
+
+void find_rotation_skew(std::array<xy_byte_t, 4> indexes, std::array<xy_pos_t, 4> measured, float &rotation, float &skew) {
+    // try different rotation angles and find proper skew for the specific rotation
+    float best_err = std::numeric_limits<float>::max();
+    float best_skew = 0.f;
+    float best_rotation = 0.f;
+    float rot_step = 0.25f;
+    const float rot_eps = 0.00025f;
+    float err1 = 0.f;
+    float err3 = 0.f;
+    float skew1 = 0.f;
+    float skew2 = 0.f;
+    float skew3 = 0.f;
+
+    // find three values:
+    // if middle is the best then we are at the minimum (increase precision / decrease step size)
+    // if a side is the best then go that direction until the direction changes
+
+    // optimization: the middle stays the same if step is changed (no need for recompute)
+    float err2 = find_skew(indexes, measured, rotation, skew2);
+    while (rot_step > rot_eps) {
+        err1 = find_skew(indexes, measured, rotation - rot_step, skew1);
+        err3 = find_skew(indexes, measured, rotation + rot_step, skew3);
+
+        int dir = (err3 < err1) ? 1 : -1;
+
+        while (1) {
+            if (err2 < err1 && err2 < err3) {
+                if (err2 < best_err) {
+                    best_err = err2;
+                    best_rotation = rotation;
+                    best_skew = skew2;
+                }
+                break;
+            }
+
+            /// TODO: convert err and skew to arrays and use indexes
+            if (err1 < err3) {
+                if (err1 < best_err) {
+                    best_err = err1;
+                    best_rotation = rotation - rot_step;
+                    best_skew = skew1;
+                }
+
+            } else {
+                if (err3 < best_err) {
+                    best_err = err3;
+                    best_rotation = rotation + rot_step;
+                    best_skew = skew3;
+                }
+            }
+
+            int dir_new = (err3 < err1) ? 1 : -1;
+            if (dir_new != dir)
+                break;
+
+            // continue in the same direction
+            rotation += dir * rot_step;
+            if (dir == 1) {
+                err1 = err2;
+                skew1 = skew2;
+                err2 = err3;
+                skew2 = skew3;
+                err3 = find_skew(indexes, measured, rotation + rot_step, skew3);
+            } else {
+                err3 = err2;
+                skew3 = skew2;
+                err2 = err1;
+                skew2 = skew1;
+                err1 = find_skew(indexes, measured, rotation - rot_step, skew);
+            }
+        }
+        // we are close to minimum => decrease step
+        rot_step *= 0.5f;
+    }
+
+    rotation = best_rotation;
+    skew = best_skew;
+}
+
 void calculate_skews(std::array<std::array<xy_pos_t, 3>, 3> centers) {
+    // generate all usable pairs of pairs of points (2 line segments)
+    // usable = with some angle between line segments (for stable computation)
+    // don't use the same (flipped) vectors' pair again
+    int pairs = 0;
+    float rotation, skew;
+    for (uint8_t y0 = 0; y0 < 3; ++y0) {
+        for (uint8_t x0 = 0; x0 < 3; ++x0) {
+            for (uint8_t y1 = y0; y1 < 3; ++y1) {
+                for (uint8_t x1 = x0 + 1; x1 < 3; ++x1) {
+                    for (uint8_t y2 = y0; y2 < 3; ++y2) {
+                        for (uint8_t x2 = x0; x2 < 3; ++x2) {
+                            for (uint8_t y3 = y1; y3 < 3; ++y3) {
+                                for (uint8_t x3 = x2 + 1; x3 < 3; ++x3) {
+                                    float l1 = sqrt(sq(x1 - x0) + sq(y1 - y0));
+                                    float l2 = sqrt(sq(x3 - x2) + sq(y3 - y2));
+                                    float cos_angle = ((x1 - x0) * (x3 - x2) + (y1 - y0) * (y3 - y2)) / (l1 * l2);
+                                    if (cos_angle >= 0.99f) //< nearly parallel vectors => unstable result
+                                        continue;
+                                    ++pairs;
+                                    std::array<xy_byte_t, 4> indexes = { xy_byte_t { x0, y0 }, xy_byte_t { x1, y1 }, xy_byte_t { x2, y2 }, xy_byte_t { x3, y3 } };
+                                    std::array<xy_pos_t, 4> measured = { centers[x0][y0], centers[x1][y1], centers[x2][y2], centers[x3][y3] };
+                                    find_rotation_skew(indexes, measured, rotation, skew);
+                                    /// TODO:
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 static float run_z_probe(float min_z = -1) {
@@ -117,16 +324,7 @@ float probe_at_skew_point(const xy_pos_t &pos) {
 bool find_safe_z() {
     bool hit = false;
 
-// Disable stealthChop if used. Enable diag1 pin on driver.
-#if ENABLED(SENSORLESS_PROBING)
-    sensorless_t stealth_states { false };
-    #if ENABLED(DELTA)
-    stealth_states.x = tmc_enable_stallguard(stepperX);
-    stealth_states.y = tmc_enable_stallguard(stepperY);
-    #endif
-    stealth_states.z = tmc_enable_stallguard(stepperZ);
-    endstops.enable(true);
-#endif
+    /// TODO: turn on probe endstop
 
     float z = current_position.z;
     for (int step = 0; z > 0; ++step) {
@@ -147,15 +345,7 @@ bool find_safe_z() {
         do_blocking_move_to_z(z, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
     }
 
-// Re-enable stealthChop if used. Disable diag1 pin on driver.
-#if ENABLED(SENSORLESS_PROBING)
-    endstops.not_homing();
-    #if ENABLED(DELTA)
-    tmc_disable_stallguard(stepperX, stealth_states.x);
-    tmc_disable_stallguard(stepperY, stealth_states.y);
-    #endif
-    tmc_disable_stallguard(stepperZ, stealth_states.z);
-#endif
+    /// TODO: turn off probe endstop
 
     // Clear endstop flags
     endstops.hit_on_purpose();
@@ -177,8 +367,7 @@ void PrusaGcodeSuite::M45() {
 
     xy_pos_t probePos;
     xy_probe_feedrate_mm_s = MMM_TO_MMS(XY_PROBE_SPEED);
-    float measured_z = 0;
-    std::array<std::array<float, 32>, 32> z_grid;
+    // std::array<std::array<float, 32>, 32> z_grid;
     std::array<std::array<xy_pos_t, 3>, 3> centers;
 
     /// cycle over 9 points
@@ -208,7 +397,7 @@ void PrusaGcodeSuite::M45() {
             //         probePos.x += x - 32 / 2 + .5f;
             //         probePos.y += y - 32 / 2 + .5f;
             //         /// FIXME: don't go too low
-            //         measured_z = probe_at_skew_point(probePos);
+            //         float measured_z = probe_at_skew_point(probePos);
             //         z_grid[x][y] = isnan(measured_z) ? -100.f : measured_z;
             //         idle(false);
             //     }
