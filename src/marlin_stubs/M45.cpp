@@ -319,34 +319,42 @@ float probe_at_skew_point(const xy_pos_t &pos) {
     return measured_z;
 }
 
-// Do "8" moves and stop if probe triggered or too low.
+// Probe around reference point to get save Z
 // \returns true if probe triggered
 bool find_safe_z() {
     bool hit = false;
-
-    /// TODO: turn on probe endstop
-
+    xyz_pos_t ref_pos = current_position;
     float z = current_position.z;
-    for (int step = 0; z > 0; ++step) {
-        if (step % 2) {
-            // CCW circle
-            plan_arc(current_position, ab_float_t { 0.f, -radius_8 }, false);
-        } else {
-            // CW circle
-            plan_arc(current_position, ab_float_t { 0.f, radius_8 }, true);
+    const float old_feedrate_mm_s = feedrate_mm_s;
+    feedrate_mm_s = XY_PROBE_FEEDRATE_MM_S;
+    float measured_z = 2.f;
+
+    for (; z >= 0; z -= .33f) {
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                // Move the probe to the XY position
+                xyz_pos_t pos = { 3.f * x, 3.f * y, 0.f };
+                pos += ref_pos;
+                do_blocking_move_to(pos);
+
+                // probe down
+                endstops.enable(true);
+                measured_z = run_z_probe(z);
+                endstops.not_homing();
+
+                // Check to see if the probe was triggered
+                hit = TEST(endstops.trigger_state(), Z_MIN);
+                if (hit)
+                    break;
+
+                // move up
+                do_blocking_move_to_z(current_position.z + 1.5f, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
+            }
         }
-
-        // Check to see if the probe was triggered
-        hit = TEST(endstops.trigger_state(), Z_MIN);
-        if (hit)
-            break;
-
-        z -= .3f;
-        do_blocking_move_to_z(z, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
     }
 
-    /// TODO: turn off probe endstop
-
+    do_blocking_move_to_z(measured_z, MMM_TO_MMS(Z_PROBE_SPEED_FAST));
+    feedrate_mm_s = old_feedrate_mm_s;
     // Clear endstop flags
     endstops.hit_on_purpose();
     // Get Z where the steppers were interrupted
